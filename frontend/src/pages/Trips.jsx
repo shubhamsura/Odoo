@@ -1,50 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
-import { AlertCircle, Clock, XCircle } from 'lucide-react';
+import { XCircle, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useApi, apiPost } from '../hooks/useApi';
 
 const TRIP_STATUSES = ['Draft', 'Dispatched', 'Completed', 'Cancelled'];
-
-const mockVehicles = [
-  { id: 1, registration_number: 'VAN-05', model: 'Transit Van', max_load: 500, status: 'Available' },
-  { id: 2, registration_number: 'TRUCK-04', model: 'Ford F-150', max_load: 1000, status: 'Available' },
-  { id: 3, registration_number: 'VAN-03', model: 'Sprinter', max_load: 800, status: 'On Trip' },
-];
-
-const mockDrivers = [
-  { id: 1, name: 'Alex', license_number: 'DL001', status: 'Available' },
-  { id: 2, name: 'Suresh', license_number: 'DL002', status: 'Available' },
-  { id: 3, name: 'Maria', license_number: 'DL003', status: 'On Trip' },
-];
-
-const mockTrips = [
-  {
-    id: 'TR001',
-    source: 'Gandhinagar Depot',
-    destination: 'Ahmedabad Hub',
-    status: 'Dispatched',
-    vehicle: 'VAN-05',
-    driver: 'Alex',
-    eta: '45 min'
-  },
-  {
-    id: 'TR004',
-    source: 'Vatva Industrial Area',
-    destination: 'Sanand Warehouse',
-    status: 'Draft',
-    vehicle: 'TRUCK-04',
-    driver: 'SURESH',
-    note: 'Awaiting driver'
-  },
-  {
-    id: 'TR006',
-    source: 'Mansa',
-    destination: 'Kalol Depot',
-    status: 'Cancelled',
-    vehicle: null,
-    driver: null,
-    note: 'Vehicle went to shop'
-  },
-];
 
 function TripLifecycle({ currentStatus }) {
   const statusIndex = TRIP_STATUSES.indexOf(currentStatus);
@@ -94,12 +53,14 @@ function TripCard({ trip }) {
     }
   };
 
+  const tripId = `TR${String(trip.id).padStart(3, '0')}`;
+
   return (
     <div className="trip-card">
       <div className="flex justify-between items-start mb-2">
-        <span className="text-sm font-semibold text-slate-800">{trip.id}</span>
+        <span className="text-sm font-semibold text-slate-800">{tripId}</span>
         <span className="text-sm text-slate-500">
-          {trip.vehicle && trip.driver ? `${trip.vehicle} / ${trip.driver}` : 'Unassigned'}
+          {trip.vehicle_reg && trip.driver_name ? `${trip.vehicle_reg} / ${trip.driver_name}` : 'Unassigned'}
         </span>
       </div>
       <p className="text-slate-700 mb-3">
@@ -110,7 +71,7 @@ function TripCard({ trip }) {
           {trip.status}
         </span>
         <span className="text-sm text-slate-500 italic">
-          {trip.eta || trip.note || ''}
+          {trip.cargo_weight} kg
         </span>
       </div>
     </div>
@@ -142,10 +103,11 @@ function CapacityWarning({ vehicleCapacity, cargoWeight }) {
 }
 
 export default function Trips() {
-  const [trips, setTrips] = useState(mockTrips);
-  const [vehicles, setVehicles] = useState(mockVehicles);
-  const [drivers, setDrivers] = useState(mockDrivers);
+  const { data: trips, loading: tripsLoading, refetch: refetchTrips } = useApi('/trips');
+  const { data: vehicles, loading: vehiclesLoading, refetch: refetchVehicles } = useApi('/vehicles');
+  const { data: drivers, loading: driversLoading, refetch: refetchDrivers } = useApi('/drivers');
 
+  const [submitting, setSubmitting] = useState(false);
   const [formData, setFormData] = useState({
     source: '',
     destination: '',
@@ -156,17 +118,17 @@ export default function Trips() {
   });
 
   const availableVehicles = useMemo(
-    () => vehicles.filter((v) => v.status === 'Available'),
+    () => (vehicles || []).filter((v) => v.status === 'Available'),
     [vehicles]
   );
 
   const availableDrivers = useMemo(
-    () => drivers.filter((d) => d.status === 'Available'),
+    () => (drivers || []).filter((d) => d.status === 'Available'),
     [drivers]
   );
 
   const selectedVehicle = useMemo(
-    () => vehicles.find((v) => v.id === Number(formData.vehicle_id)),
+    () => (vehicles || []).find((v) => v.id === Number(formData.vehicle_id)),
     [vehicles, formData.vehicle_id]
   );
 
@@ -180,7 +142,8 @@ export default function Trips() {
     formData.driver_id &&
     formData.cargo_weight &&
     formData.planned_distance &&
-    !isOverCapacity;
+    !isOverCapacity &&
+    !submitting;
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -195,39 +158,36 @@ export default function Trips() {
       return;
     }
 
-    const newTrip = {
-      id: `TR${String(trips.length + 1).padStart(3, '0')}`,
-      source: formData.source,
-      destination: formData.destination,
-      status: 'Dispatched',
-      vehicle: selectedVehicle?.registration_number,
-      driver: drivers.find((d) => d.id === Number(formData.driver_id))?.name,
-      eta: 'Just dispatched'
-    };
+    setSubmitting(true);
+    try {
+      await apiPost('/trips', {
+        source: formData.source,
+        destination: formData.destination,
+        vehicle_id: Number(formData.vehicle_id),
+        driver_id: Number(formData.driver_id),
+        cargo_weight: Number(formData.cargo_weight),
+        planned_distance: Number(formData.planned_distance),
+      });
 
-    setTrips((prev) => [newTrip, ...prev]);
+      toast.success('Trip dispatched successfully!');
 
-    setVehicles((prev) =>
-      prev.map((v) =>
-        v.id === Number(formData.vehicle_id) ? { ...v, status: 'On Trip' } : v
-      )
-    );
-    setDrivers((prev) =>
-      prev.map((d) =>
-        d.id === Number(formData.driver_id) ? { ...d, status: 'On Trip' } : d
-      )
-    );
+      setFormData({
+        source: '',
+        destination: '',
+        vehicle_id: '',
+        driver_id: '',
+        cargo_weight: '',
+        planned_distance: '',
+      });
 
-    setFormData({
-      source: '',
-      destination: '',
-      vehicle_id: '',
-      driver_id: '',
-      cargo_weight: '',
-      planned_distance: '',
-    });
-
-    toast.success('Trip dispatched successfully!');
+      refetchTrips();
+      refetchVehicles();
+      refetchDrivers();
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleCancel = () => {
@@ -240,6 +200,16 @@ export default function Trips() {
       planned_distance: '',
     });
   };
+
+  const isLoading = tripsLoading || vehiclesLoading || driversLoading;
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="animate-spin text-blue-500" size={32} />
+      </div>
+    );
+  }
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -346,7 +316,13 @@ export default function Trips() {
                 disabled={!canDispatch}
                 className="btn-primary flex-1"
               >
-                {isOverCapacity ? 'Dispatch (disabled)' : 'Dispatch'}
+                {submitting ? (
+                  <Loader2 className="animate-spin mx-auto" size={20} />
+                ) : isOverCapacity ? (
+                  'Dispatch (disabled)'
+                ) : (
+                  'Dispatch'
+                )}
               </button>
               <button
                 type="button"
@@ -368,9 +344,13 @@ export default function Trips() {
       <div>
         <h2 className="text-lg font-semibold text-slate-800 mb-4">Live Board</h2>
         <div className="space-y-4">
-          {trips.map((trip) => (
-            <TripCard key={trip.id} trip={trip} />
-          ))}
+          {(trips || []).length === 0 ? (
+            <p className="text-slate-500 text-center py-8">No trips yet. Create your first trip!</p>
+          ) : (
+            (trips || []).map((trip) => (
+              <TripCard key={trip.id} trip={trip} />
+            ))
+          )}
         </div>
       </div>
     </div>
